@@ -1,0 +1,443 @@
+#!/usr/bin/perl -w
+use strict;
+$| = 1;
+use sigtrap qw(die untrapped);
+
+use URI;
+use constant DAYS => 86400;     # for specifications
+
+## configuration constants
+
+my $DATABASE = (glob "~/.linkchecker")[0];
+
+my $VERBOSE = 1;                # 0 = quiet, 1 = noise, 2 = lots of noise
+
+my $RECHECK = 0.1 * DAYS;       # seconds between rechecking any URL
+my $RECHECK_GOOD = 1 * DAYS;    # seconds between rechecking good URLs
+my $REPORT = 0 * DAYS;          # seconds before bad enough to report
+
+my $FOLLOW_REDIRECT = 1;        # follow a redirect as if it were a link
+my $TIMEOUT = 30;               # timeout on fetch (hard timeout is twice this)
+my $MAXSIZE = 1048576;          # max size for fetch (undef if fetch all)
+
+my $KIDMAX = 5;                 # how many kids to feed
+
+my @CHECK =                     # list of initial starting points
+  qw(http://www.perl.borg/);
+
+sub PARSE {
+  ## return 2 to parse if HTML
+  ## return 1 to merely verify existence
+  ## return 0 to not even verify existence, but still xref
+  ## return -1 to ignore entirely
+  my $url = shift;              # URI object (absolute)
+  for ($url->scheme) {
+    return 0 unless /^http$/;
+  }
+  for ($url->query) {
+    return -1 if /^C=[DMNS];O=[AD]/; # silly mod_index
+  }
+  for ($url->host) {
+    if (/www\.perl\.borg$/) {
+      for ($url->path) {
+        return 0 if /images|photos/; # boring
+        return 0 if /^\/(tpc|yapc)\/.*(199[89]|200[012])/; # old
+      }
+      return 2;                 # default www.perl.borg
+    }
+
+    return 0 if /use\.perl\.borg$/;
+    
+  }
+  return 1;                   # ping the world
+}
+
+sub HACK_URL {
+  my $url = shift;              # URI object
+  $url->path("$1") if $url->path =~ /^(.*\/)index\.html$/s;
+  $url->canonical;
+}
+
+## end configuration constants
+
+### internally-defined classes
+
+{
+  package My::DBI;
+  use base 'Class::DBI';
+
+  __PACKAGE__->set_db('Main', "dbi:SQLite:dbname=$DATABASE", undef, undef,
+                        {AutoCommit => 1});
+
+  sub CONSTRUCT {
+    my $class = shift;
+    for (qw(My::Page My::Link)) {
+      eval { $_->sql_CONSTRUCT->execute };
+      die $@ if $@ and $@ !~ /already exists/;
+    }
+  }
+
+  sub atomically {
+    my $class = shift;
+    my $action = shift;         # coderef
+    local $class->db_Main->{AutoCommit}; # turn off AutoCommit for this block
+
+    my @result;
+    eval {
+      @result = wantarray ? $action->() : scalar($action->());
+      $class->dbi_commit;
+    };
+    if ($@) {
+      warn "atomically got error: $@";
+      my $commit_error = $@;
+      eval { $class->dbi_rollback };
+      die $commit_error;
+    }
+    die $@ if $@;
+    wantarray ? @result : $result[0];
+  }
+}
+
+{
+  package My::Link;
+  our @ISA = qw(My::DBI);
+
+  __PACKAGE__->table('link');
+  __PACKAGE__->set_sql(CONSTRUCT => <<'SQL');
+CREATE TABLE __TABLE__ (
+  src TEXT,
+  dst TEXT,
+  PRIMARY KEY (src, dst)
+)  
+SQL
+  __PACKAGE__->columns(Primary => qw(src dst));
+  __PACKAGE__->has_a(src => 'My::Page');
+  __PACKAGE__->has_a(dst => 'My::Page');
+}
+
+{
+  package My::Page;
+  our @ISA = qw(My::DBI);
+  use enum qw(:State_ unseen todo working done);
+
+  __PACKAGE__->table('page');
+  __PACKAGE__->set_sql(CONSTRUCT => <<"SQL");
+CREATE TABLE __TABLE__ (
+  location TEXT PRIMARY KEY,
+  state INT DEFAULT @{[State_unseen]},
+  last_status TEXT,
+  last_checked INT,
+  last_good INT,
+  last_modified INT
+)  
+SQL
+  __PACKAGE__->columns(All => qw(location state last_status
+                                 last_checked last_good last_modified));
+
+  __PACKAGE__->has_many(inbound => 'My::Link', 'dst', { sort => 'src' });
+  __PACKAGE__->has_many(outbound => 'My::Link', 'src', { sort => 'dst' });
+
+  sub make_working_atomically {
+    my $self = shift;
+
+    $self->atomically(sub {
+                        $self->state == State_todo or return undef;
+                        $self->state(State_working);
+                        $self->update;
+                        return 1;
+                      });
+  }
+
+  sub create_or_make_todo {
+    my $class = shift;
+    my $location = shift;
+
+    $class->atomically(sub {
+                         my $item = $class->find_or_create({location => $location});
+                         if ((not defined($item->state)
+                              or $item->state == State_unseen)) {
+                           $item->state(State_todo);
+                           $item->update;
+                         }
+                         $item;
+                       });
+  }
+}
+
+{
+  use LWP::UserAgent;
+  my $AGENT = LWP::UserAgent->new;
+  $AGENT->agent("linkchecker/0.42 " . $AGENT->agent);
+  $AGENT->env_proxy;
+  $AGENT->timeout($TIMEOUT);
+
+  sub fetch { $AGENT->simple_request(@_) }
+}
+
+### main code begins here
+
+## initialize database if needed
+My::DBI->CONSTRUCT;
+
+## reset all working to todo
+for my $page (My::Page->search(state => My::Page::State_working)) {
+  $page->state(My::Page::State_todo);
+  $page->update;
+}
+
+## unless any are todo or finished, prime the pump
+unless (() = My::Page->search(state => My::Page::State_todo)
+        or () = My::Page->search(state => My::Page::State_done)) {
+  print "Starting a new run...\n";
+  My::Page->create_or_make_todo(HACK_URL(URI->new($_))->as_string)
+      for @CHECK;
+}
+
+## main loop, done by kids:
+kids_do(sub {                   # the task
+          srand;                # spin random number generator uniquely
+          while (my @todo = My::Page->search(state => My::Page::State_todo)) {
+            my $page = $todo[rand @todo]; # pick one at random
+            unless($page->make_working_atomically) {
+              # someone else got it
+              print "$$ wanted ", $page->location, "\n" if $VERBOSE;
+              next;
+            }
+            ;
+            print "$$ doing ", $page->location, "\n" if $VERBOSE > 1;
+            do_one_page($page);
+          }
+        },
+        sub {                   # max kids needed
+          scalar(() = My::Page->search(state => My::Page::State_todo));
+        });
+
+## clean out any unseen at this point (no longer needed)
+$_->delete for My::Page->search(state => My::Page::State_unseen);
+
+## display report
+print "*** BEGIN REPORT ***\n";
+for my $page (My::Page->search(state => My::Page::State_done,
+                               {order_by => 'location'})) {
+  next if $page->last_checked <= $page->last_good + $REPORT;
+  my $url = URI->new($page->location);
+  print "$url:\n";
+  print "  Status: ", $page->last_status, "\n";
+  for (qw(checked good modified)) {
+    my $method = "last_$_";
+    my $value = $page->$method() or next;
+    print "  \u\L$_\E: ".localtime($value)."\n";
+  }
+
+  for my $inbound ($page->inbound) {
+    my $inbound_page = $inbound->src;
+    my $inbound_url = URI->new($inbound_page->location);
+    my $rel = $inbound_url->rel($url);
+    $rel = $inbound_url->path_query if $rel =~ /^\.\.\/\.\./;
+    print "  from $rel\n";
+  }
+  for my $outbound ($page->outbound) {
+    my $outbound_page = $outbound->dst;
+    my $outbound_url = URI->new($outbound_page->location);
+    my $rel = $outbound_url->rel($url);
+    $rel = $outbound_url->path_query if $rel =~ /^\.\.\/\.\./;
+    my $outbound_status = $outbound_page->last_status;
+    print "  to $rel: $outbound_status\n";
+  }
+}
+print "*** END REPORT ***\n";
+
+## reset for next pass
+for my $page (My::Page->search(state => My::Page::State_done)) {
+  $page->state(My::Page::State_unseen);
+  $page->update;
+}
+
+exit 0;
+
+### subroutines
+
+sub do_one_page {
+  my $page = shift;             # My::Page
+
+  my $url = URI->new($page->location);
+  my $parse = PARSE($url);
+  if ($parse >= 2) {
+    print "Parsing $url\n" if $VERBOSE;
+    if (time < ($page->last_checked || 0) + $RECHECK or
+        time < ($page->last_good || 0) + $RECHECK_GOOD) {
+      print "$url: too early to reparse\n" if $VERBOSE;
+      ## reuse existing links
+      My::Page->create_or_make_todo($_->dst->location) for $page->outbound;
+    } else {
+      parse_or_ping($page, $url, "PARSE");
+    }
+  } elsif ($parse >= 1) {
+    print "Pinging $url\n" if $VERBOSE;
+    if (time < ($page->last_checked || 0) + $RECHECK or
+        time < ($page->last_good || 0) + $RECHECK_GOOD) {
+      print "$url: too early to reping\n" if $VERBOSE;
+      $_->delete for $page->outbound; # delete any existing stale links
+    } else {
+      parse_or_ping($page, $url, "PING");
+    }
+  } else {
+    print "Skipping $url\n" if $VERBOSE;
+    $page->last_status("Skipped");
+    $page->last_checked(0);
+  }
+  $page->state(My::Page::State_done);
+  $page->update;
+}
+
+sub parse_or_ping {
+  my $page = shift;             # My::Page
+  my $url = shift;              # URI
+  my $kind = shift;             # "PARSE" or "PING"
+
+  use HTML::LinkExtor;
+
+  ## create the request
+  my $request = HTTP::Request->new(GET => "$url");
+  $request->if_modified_since($page->last_modified) if $page->last_modified;
+
+  ## fetch the response
+  my $content;
+  my $content_type;
+  my $res = fetch
+    ($request,
+     sub {
+       my ($data, $response, $protocol) = @_;
+       unless ($content_type) {
+         if ($content_type = $response->content_type) {
+           if ($kind eq "PING") {
+             print "aborting $url for ping\n" if $VERBOSE > 1;
+             die "ping only";
+           }
+           if ($content_type ne "text/html") {
+             print "aborting $url for $content_type\n" if $VERBOSE > 1;
+             die "content type is $content_type";
+           }
+         }
+       }
+       $content .= $data;
+       if ($MAXSIZE and length $content > $MAXSIZE) {
+         print "aborting $url for content length\n" if $VERBOSE > 1;
+         die "content length is ", length $content;
+       }
+     }, 8192);
+  $res->content($content);      # stuff what we got
+
+  ## analyze the results
+  if ($res->is_success) {
+    my $now = time;
+    $page->last_checked($now);
+    $page->last_good($now);
+    $page->last_modified($res->last_modified || $res->date);
+    $_->delete for $page->outbound; # delete any existing stale links
+
+    if ($content_type eq "text/html") {
+      if ($kind eq "PARSE") {
+        print "$url: parsed\n" if $VERBOSE;
+        $page->last_status("Verified and parsed");
+        my %seen;
+        HTML::LinkExtor->new
+            (sub {
+               my ($tag, %attr) = @_;
+               $seen{$_}++ or add_link($page, $_) for values %attr;
+             }, $res->base)->parse($res->content);
+      } else {                  # presume $kind = PING
+        print "$url: good ping\n" if $VERBOSE;
+        $page->last_status("Verified (contents not examined)");
+      }
+    } else {
+      print "$url: content = $content_type\n" if $VERBOSE;
+      $page->last_status("Verified (content = $content_type)");
+    }
+  } elsif ($res->code == 304) { # not modified
+    print "$url: not modified\n" if $VERBOSE;
+    my $now = time;
+    $page->last_checked($now);
+    $page->last_good($now);
+    ## reuse existing links
+    My::Page->create_or_make_todo($_->dst->location) for $page->outbound;
+  } elsif ($res->is_redirect) {
+    my $location = $res->header("Location");
+    print "$url: redirect to $location\n" if $VERBOSE;
+    $_->delete for $page->outbound; # delete any existing stale links
+    add_link($page, $location, $res->base) if $FOLLOW_REDIRECT;
+    $page->last_status("Redirect (status = ".$res->code.") to $location");
+    $page->last_checked(time);
+  } else {
+    print "$url: not verified: ", $res->code, "\n" if $VERBOSE;
+    $_->delete for $page->outbound; # delete any existing stale links
+    $page->last_status("NOT Verified (status = ".($res->code).")");
+    $page->last_checked(time);
+  }
+  $page->update;
+}
+
+sub add_link {
+  my $page = shift;             # My::Page
+  my $url_string = shift;       # string
+  my $base = shift;             # maybe undef
+
+  my $url = $base
+    ? URI->new_abs($url_string, URI->new($base))
+      : URI->new($url_string);
+  $url->fragment(undef);        # blow away any fragment
+  $url = HACK_URL($url);
+  return if PARSE($url) < 0;    # skip any links to non-xref pages
+  print "saw $url\n" if $VERBOSE > 1;
+
+  my $newpage = My::Page->create_or_make_todo("$url");
+  ## the following might die if there's already one link there
+  eval { My::Link->create({src => $page, dst => $newpage}) };
+  die $@ if $@ and not $@ =~ /uniqueness constraint/;
+}
+
+sub kids_do {
+  my $code_task = shift;
+  my $code_count = shift;
+
+  use POSIX qw(WNOHANG);
+
+  my %kids;
+
+  while (keys %kids or $code_count->()) {
+    ## reap kids
+    while ((my $kid = waitpid(-1, WNOHANG)) > 0) {
+      ## warn "$kid reaped";    # trace
+      delete $kids{$kid};
+    }
+    ## verify live kids
+    for my $kid (keys %kids) {
+      next if kill 0, $kid;
+      warn "*** $kid found missing ***"; # shouldn't happen
+      delete $kids{$kid};
+    }
+    ## launch kids
+    if (keys %kids < $KIDMAX
+        and keys %kids < $code_count->()) {
+      ## warn "forking a kid";  # trace
+      my $kid = fork;
+      if (defined $kid) {       # good parent or child
+        if ($kid) {             # parent
+          $kids{$kid} = 1;
+        } else {
+          $code_task->();       # the real task
+          exit 0;
+        }
+      } else {
+        warn "cannot fork: $!"; # hopefully temporary
+        sleep 1;
+        next;                   # outer loop
+      }
+    }
+    print "[", scalar keys %kids, " kids]\n" if $VERBOSE;
+    sleep 1;
+  }
+}
+
+sub URI::mailto::host { ""; }   # workaround bug in LWP
+sub URI::mailto::authority { ""; } # workaround bug in LWP

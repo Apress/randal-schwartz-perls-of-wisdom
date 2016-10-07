@@ -1,0 +1,111 @@
+#!/usr/bin/perl -Tw
+use strict;
+$|++;
+
+use CGI qw(:all);
+use CGI::Carp qw(fatalsToBrowser);
+use Fcntl ':flock'; # import LOCK_* constants
+
+## CONFIG
+
+my $DATAFILE = "/home/merlyn/Web/customer_survey-data";
+
+my @QUESTIONS =
+  (
+   ['Name (optional)', 'name', \&textfield, [qw(size 60)]],
+   ['Email (optional)', 'email', \&textfield, [qw(size 60)],
+    sub { die "Please include a full email address!\n"
+            if /\S/ and not /\@/ },
+   ],
+   ['Product', 'product', \&popup_menu,
+    [values => ['Please Choose One', 'thx-1138', 'hal 9000']],
+    sub { die "Please choose a product!\n" if /choose/i },
+   ],
+   ['Model (if applicable)', 'model', \&textfield, [qw(size 30)]],
+   ['Overall impression', 'overall', \&popup_menu,
+    [values => ['Please Choose One', qw(Excellent Good Fair Poor)]],
+    sub { die "Please choose an impression!\n" if /choose/i },
+   ],
+   ['Reason for product choice (choose all that are applicable)',
+    'chose_because',            # referenced below
+    \&checkbox_group,
+    [values => [qw(Price Salesman Quality Performance Reliability Other)],
+     cols => 1],
+    undef, 1
+   ],
+   ['Other reason for product choice (if applicable)', 'chose_because_other',
+    \&textarea, [qw(rows 2 columns 60)],
+    sub {
+      die "Please give your other reason...\n" if not /\S/
+        and grep /other/i, @{shift->{chose_because}};
+    },
+   ],
+   ['Quality', 'quality', \&radio_group,
+    [values => ['Please Choose One', qw(Excellent Good Fair Poor)],
+     cols => 1,
+    ],
+    sub { die "Please choose a quality!\n" if /choose/i },
+   ],
+   ['Area of use (choose all that apply)', 'area', \&scrolling_list,
+    [values => ['Please Choose One Or More', qw(Home School Office)],
+     size => 4,
+     multiple => 'true',
+    ],
+    sub { die "Please choose an area!\n" unless grep !/choose/i, @$_ },
+    1,
+   ],
+   ['Comments', 'comments', \&textarea, [qw(rows 10 columns 50)]],
+  );
+
+## END CONFIG
+
+print header, start_html("Customer Survey"), h1("Customer Survey");
+
+eval {
+  my %results = map { $_ => [param($_)] } param;
+  die "Please fill out this form...\n" unless %results;
+
+  for (@QUESTIONS) {
+    my ($label, $name, $func, $opts, $validator, $multi) = @$_;
+    my @values = @{$results{$name} || []};
+    die "\n$name\nToo many values, try again...\n"
+      if @values > 1 and not $multi;
+    next unless $validator and ref $validator eq "CODE";
+    local $_ = $multi ? \@values : $values[0];
+    eval { $validator->(\%results) };
+    die "\n$name\n$@" if $@;
+  }
+
+  ## made it past the errors, so save it
+
+  eval {
+    ## so that these don't trigger outer error
+    require XML::Simple;
+    my $out = XML::Simple::XMLout(\%results);
+    open OUT, ">>$DATAFILE" or die "Cannot append to $DATAFILE: $!";
+    flock OUT, LOCK_EX;
+    print OUT $out;
+    close OUT;                  # and release lock
+
+    ## DEBUG
+    print table({border => 1}, Tr(td(pre(escapeHTML($out)))));
+  };
+  print STDERR $@ if $@;        # if that last thing errored
+
+};
+my $error = $@;
+if ($error) {
+  my $flag = ($error =~ s/^\n(\S+)\n//) ? $1 : "";
+  print p($error), start_form;
+  print table({border => 0, colspacing => 0, colpadding => 2},
+              map {
+                my($label, $name, $func, $opts) = @$_;
+                Tr({$name eq $flag ? (bgcolor => '#ffcccc') : ()},
+                   th({align => 'right', valign => 'top'}, $label),
+                   td($func->(-name => $name, @$opts)));
+              } @QUESTIONS);
+  print submit, end_form;
+} else {
+  print p("Thank you!");
+}
+print end_html;

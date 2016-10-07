@@ -1,0 +1,84 @@
+#!/home/merlyn/bin/perl -Tw
+use strict;
+$| = 1;
+
+## set the path
+$ENV{"PATH"} = "/usr/local/bin:/usr/ucb:/bin:/usr/bin";
+
+my $header_printed = 0;         # so the death handler knows
+
+## return $_[0] encoded for HTML entities
+sub ent {
+  local $_ = shift;
+  $_ =~ s/["<&>"]/"&#".ord($&).";"/ge;  # entity escape
+  $_;
+}
+
+## death handler
+$SIG{"__DIE__"} = $SIG{"__WARN__"} = sub {
+  my $why = shift;
+  chomp $why;
+  $why = ent $why;
+  print "Content-type: text/html\n\n" unless $header_printed++;
+  print "ERROR: $why\n";
+  exit 0;
+};
+
+use CGI qw/:standard/;
+
+my $DIR = "/home/merlyn/Html/merlyn/WebTechniques";
+my $URL = "http://www.stonehenge.com/merlyn/WebTechniques";
+my $FILEPAT = "*.listing.txt";
+
+print header; $header_printed++;
+print start_html("-title" => "Search WebTechniques Perl Scripts");
+print h1("Search WebTechniques Perl Scripts");
+print "Search the <A HREF=\"$URL/\">Perl WebTechniques programs</A>",
+  " by submitting this form:\n";
+print hr, start_form;
+print p, "Search for: ", textfield("-name" => "search");
+print p, checkbox("-name" => "regex", "-label" => "Use Regular Expressions");
+print p, checkbox("-name" => "ignore", "-label" => "Ignore case");
+print p, submit;
+print end_form, hr;
+
+my $searchstring = param("search"); # the search item
+if (defined $searchstring and length $searchstring) {
+  chdir $DIR or die "Cannot chdir $DIR: $!";
+  @ARGV = glob $FILEPAT;        # get matching filenames for <>
+  unless (param("regex")) {     # if ordinary string...
+    $searchstring = quotemeta $searchstring; # make ordinary.
+  }
+  my $ignore = param("ignore") ? "(?i)" : ""; # make case insensitive
+  print "<P>Follow the link to get the full listing:\n";
+  print "<PRE>\n";
+  my $per_file = 0;             # how many hits this file?
+  while (<>) {
+    if (eof) {
+      close ARGV;               # resets $.
+      $per_file = 0;
+    }
+    chomp;
+    my $per_line = 0;           # how many hits this line?
+    while (s/$ignore$searchstring//o) {
+      print
+        '<A HREF="',ent("$URL/$ARGV"),'">',
+        ent($ARGV),"</A>:$.: "
+          unless $per_line++;   # first time, print prefix
+      print ent($`), b(ent $&);
+      $_ = $';
+      last if $per_line >= 5;   # only five hits max per line
+    }
+    if ($per_line) {            # at least one hit?
+      print ent($_),"\n";       # finish line off
+      if (++$per_file >= 5) {   # only five lines max per file
+        print "[skipping to next file]\n";
+        close ARGV;             # force EOF
+        $per_file = 0;
+      }
+    }
+  }
+  print "</PRE>\n";
+}
+
+print end_html;

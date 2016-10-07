@@ -1,0 +1,108 @@
+package Stonehenge::Throttle;
+use strict;
+
+## usage: PerlAccessHandler Stonehenge::Throttle
+
+my $HISTORYDIR = "/home/merlyn/lib/Apache/Throttle";
+
+my $WINDOW = 15;                # seconds of interest
+my $DECLINE_CPU_PERCENT = 7; # CPU percent in window before we 503 error
+
+use vars qw($VERSION);
+$VERSION = (qw$Revision: 2.7 $ )[-1];
+
+use Apache::Constants qw(OK DECLINED);
+use Apache::File;
+use Apache::Log;
+
+sub handler {
+  ## use Stonehenge::Reload; goto &handler if Stonehenge::Reload->reload_me;
+
+  my $r = shift;                # closure var
+  return DECLINED unless $r->is_initial_req;
+  my $log = $r->server->log;    # closure var
+
+  my $host = $r->get_remote_host; # closure var
+  return DECLINED if $host =~ /\.(holdit|stonehenge)\.com$/;
+  return DECLINED if $host =~ /\.metronomicon\.com$/; # poor purl
+  $host = "googlebot.com" if $host =~ /\.googlebot\.com$/;
+
+  my $historyfile = "$HISTORYDIR/$host-times"; # closure var
+  my $blockfile = "$HISTORYDIR/$host-blocked"; # closure var
+  my @delta_times = times;      # closure var
+  my $fh = Apache::File->new;   # closure var
+
+  $r->push_handlers
+    (PerlLogHandler =>
+     sub {
+
+       ## record this CPU usage
+       @delta_times = map { $_ - shift @delta_times } times;
+       my $cpu_hundred = 0;
+       $cpu_hundred += $_ for @delta_times;
+       $cpu_hundred = int 100*($cpu_hundred + 0.005);
+       ## $log->notice("throttle: $host got $cpu_hundred/100 in this slot"); # DEBUG
+       open $fh, ">>$historyfile" or return DECLINED;
+       my $time = time;
+       syswrite $fh, pack "LL", $time, $cpu_hundred;
+       close $fh;
+
+       my $startwindow = $time - $WINDOW;
+
+       if (my @stat = stat($blockfile)) {
+         if ($stat[9] > $startwindow) {
+           ## $log->notice("throttle: $blockfile is already blocking"); # DEBUG
+           return OK;           # nothing further to see... move along
+         } else {
+           ## $log->notice("throttle: $blockfile is old, ignoring"); # DEBUG
+         }
+       }
+
+       # figure out if we should be blocking
+       my $totalcpu = 0;        # scaled by 100
+
+       open $fh, $historyfile or return DECLINED;
+       while ((read $fh, my $buf, 8) > 0) {
+         my ($time, $cpu) = unpack "LL", $buf;
+         next if $time < $startwindow;
+         $totalcpu += $cpu;
+       }
+       close $fh;
+
+       if ($totalcpu < $WINDOW * $DECLINE_CPU_PERCENT) {
+         ## $log->notice("throttle: $host got $totalcpu/100 CPU in $WINDOW secs"); # DEBUG
+         unlink $blockfile;
+         return OK;
+       }
+
+       ## about to be nasty... let's see how bad it is:
+       open $fh, "/proc/loadavg";
+       chomp(my $loadavg = <$fh>);
+       close $fh;
+
+       my $useragent = $r->header_in('User-Agent') || "unknown";
+
+       $log->notice("throttle: $host got $totalcpu/100 CPU in $WINDOW secs, enabling block [loadavg $loadavg, agent $useragent]");
+       open $fh, ">$blockfile";
+       close $fh;
+
+       return OK;
+     });
+
+  ## back in the access handler:
+
+  if (my @stat = stat($blockfile)) {
+    if ($stat[9] > time - $WINDOW) {
+      $log->warn("throttle access: $blockfile is blocking");
+      $r->header_out("Retry-After", $WINDOW);
+      return 503;               # Service Unavailable
+    } else {
+      ## $log->notice("throttle access: $blockfile is old, ignoring"); # DEBUG
+      return DECLINED;
+    }
+  }
+
+  return DECLINED;
+}
+1;
+

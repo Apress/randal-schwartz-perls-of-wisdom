@@ -1,0 +1,61 @@
+#!/home/merlyn/bin/perl -wT
+
+use strict;
+use URI::URL;
+
+## configuration
+my $BASE = "/merlyn/WebTechniques/"; # must end in slash
+my $VALID_SECONDS = 60 * 60 * 4; # four hours
+## end configuration
+
+## return $_[0] encoded for HTML entities
+sub ent {
+  local $_ = shift;
+  $_ =~ s/["<&>"]/"&#".ord($&).";"/ge;  # entity escape
+  $_;
+}
+
+my $info = $ENV{PATH_INFO};
+$info = "/" unless defined $info;
+$info = ".$info";               # always "./" prefix
+
+my $self_url = url("http:");
+$self_url->host($ENV{SERVER_NAME}) if defined $ENV{SERVER_NAME};
+$self_url->port($ENV{SERVER_PORT}) if defined $ENV{SERVER_PORT};
+$self_url->path($ENV{SCRIPT_NAME} || "/cgi/$0");
+$self_url = "$self_url/";       # note that $self_url is a string now
+
+my $when = 0;
+$when = $1 if $info =~ s!^\./(\d+)/!./!;
+
+## catchall if illegal url (attempt to back up over top)
+## or expired (and not one of the entries into the tree)
+if (
+    (index("/$info/", "/../") > -1) or
+    $info ne "./" and
+    time > $when + 2 * $VALID_SECONDS) { # hard expired URL, say so
+  my $r_html = ent("$self_url$info");
+  my $s_html = ent($self_url);
+
+  print <<"EOF";
+Content-type: text/html
+Status: 404 Not Found
+
+<HTML><TITLE>Expired URL</TITLE></HEAD>
+<BODY><H1>Expired URL</H1>
+The requested URL $r_html has expired.  Please return to
+<A HREF="$s_html">$s_html</A> to start with a new unexpired URL.
+</BODY>
+EOF
+  exit 0;
+}
+my $location =
+  url($info,                    # $info is relative to...
+      (time > $when + $VALID_SECONDS) ? # if too old...
+      $self_url.time."/" :      # this script and time (external redirect)
+      $BASE                     # or use as-is (internal redirect)
+     )->abs;                    # made absolute
+
+print "Location: $location\n";
+print "\n";
+

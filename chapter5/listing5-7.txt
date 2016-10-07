@@ -1,0 +1,60 @@
+#!/usr/bin/perl -w
+use strict;
+$|++;
+
+use Date::Calc qw(Decode_Month Mktime Decode_Date_US);
+use File::Find;
+
+## begin config
+
+my @DIRS = glob "/home/merlyn/Logs/OLD.*/.";
+my $START = "1/1/2001";
+my $END = "1/1/2002";
+
+## end config
+
+for ($START, $END) {
+  my @y_m_d = Decode_Date_US($_) or die "Cannot decode $_";
+  $_ = Mktime(@y_m_d, 12, 0, 0); # noon on that day
+}
+
+my @files;
+find sub {
+  return unless /^access_log.*gz$/;
+  return unless -f;
+  my $mtime = (stat(_))[9];
+  return unless $mtime >= $START and $mtime <= $END;
+  push @files, $File::Find::name;
+}, @DIRS;
+
+my %count;
+
+my %month_name_to_number;
+
+while (my @chunk = splice @files, 0, 10) {
+  open IN, "zcat @chunk |" or die;
+  while (<IN>) {
+    my ($day, $month, $year, $hour, $minute, $second) =
+      m{
+        ^
+        (?!web\.stonehenge\.comm)
+        [^\[]*
+        \[
+        (\d+) \/ (\w+) \/ (\d+)
+        :
+        (\d+) : (\d+) : (\d+)
+       }x or next;
+    $month = $month_name_to_number{$month}
+      ||= sprintf "%02d", Decode_Month($month);
+    $count{"$year $month"}{0+$day}{0+$hour}++;
+  }
+}
+
+for my $year_month (sort keys %count) {
+  for my $day (sort {$a <=> $b} keys %{$count{$year_month}}) {
+    for my $hour (0..23) {
+      my $hits = $count{$year_month}{$day}{$hour} || 0;
+      printf "%s %02d %02d: %d\n", $year_month, $day, $hour, $hits;
+    }
+  }
+}

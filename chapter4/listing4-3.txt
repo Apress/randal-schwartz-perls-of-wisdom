@@ -1,0 +1,46 @@
+### LISTING TWO [bigword]
+#!/home/merlyn/bin/perl -wT
+use strict;
+$|++;
+$ENV{PATH} = "/usr/bin:/usr/ucb";
+
+use GD;
+
+srand;
+
+my $num;
+
+if ($< == 60001) {
+  open STDERR, ">/dev/null";
+  print "Content-type: image/gif\n\n";
+}
+
+if ($ENV{'QUERY_STRING'} =~ /^(\w{1,30})$/) {
+    $num = $1;
+} else {
+    $num = "bogus";
+}
+
+my $font = gdLargeFont;
+my $char_x = $font->width;
+my $char_y = $font->height;
+
+my $jiggle = 4;
+my $picture_x = (1 + $char_x) * length($num) + 1;
+my $picture_y = (1 + $char_y) * 1 + $jiggle;
+
+my $image = new GD::Image($picture_x, $picture_y);
+my $background = $image->colorAllocate(127,127,127);
+$image->transparent($background);
+$image->interlaced('true');
+my $red = $image->colorAllocate(255,0,0);
+
+my $x = 1;
+my @chars = split //, $num;
+while (@chars) {
+  my $char = shift @chars;
+  $image->string($font,$x,int(1+rand($jiggle)),$char,$red);
+  $x += $char_x + 1;
+}
+
+print $image->gif;

@@ -1,0 +1,41 @@
+#!/usr/bin/perl -w
+use strict;
+$|++;
+
+use LWP::Simple;
+
+## BEGIN CONFIG
+my $ACTIVE = "/home/merlyn/Web/Balance/active";
+my $CONFIG = "/home/merlyn/Web/Balance/config";
+my $MIN_LOOP_TIME = 30;
+## END CONFIG
+
+my %hosts;
+my $host_check_time = 0;
+my $loop_time = time;
+
+{ # forever do:
+  my $stat_time = (stat $CONFIG)[9];
+  if ($stat_time and $stat_time > $host_check_time) {
+    open CONFIG, $CONFIG or die "Cannot open $CONFIG: $!";
+    %hosts = map /^(\S+) (\S+)/, grep !/^#/, <CONFIG>;
+    close CONFIG;
+    $host_check_time = $stat_time;
+  }
+  my %results;
+  for my $host (keys %hosts) {
+    my $result = get "http://$host$hosts{$host}";
+    next unless defined $result;
+    next unless $result =~ /(\d+\.\d+)/;
+    $results{$host} = $1;
+  }
+  my $output = "$ACTIVE.tmp";
+  open NEW, ">$output" or die "Cannot create $output: $!";
+  print NEW "$_ $results{$_}\n" for keys %results;
+  close NEW;
+  rename $output, $ACTIVE or warn "Cannot rename $output to $ACTIVE: $!";
+  my $delay = $loop_time + $MIN_LOOP_TIME - time;
+  sleep $delay if $delay > 0;
+  $loop_time = time;
+  redo;
+}

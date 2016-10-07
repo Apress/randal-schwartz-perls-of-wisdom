@@ -1,0 +1,104 @@
+#!/usr/bin/perl -T
+use strict;
+$|++;
+use lib "/home/merlyn/CGIA";
+use CGI qw(standard);
+
+my $target_dir = "/home/merlyn/public_html/protected";
+my $target_url = "http://www.teleport.com/~merlyn/protected";
+my $target_htpasswd = "$target_dir/.htpasswd";
+my $N = "\n";			# two chars instead of 4 :-)
+
+print
+  header, $N,
+  start_html('subscribe to protected', 'merlyn@stonehenge.com'), $N;
+
+unless (param) {		# generate initial form
+  print +
+    h1 ('Subscribe to "protected"'), $N,
+    hr, $N,
+    start_form('POST',url), $N,
+    p, 'Your desired username: ', textfield('username','',20), $N,
+    p, 'Your e-mail address: ', textfield('email','',60), $N,
+    p, 'Your real name: ', textfield('real','',60), $N,
+    p, submit, $N,
+    end_form, $N,
+    hr, $N,
+    end_html, $N;
+  exit 0;
+}
+
+## main toplevel:
+eval {
+  my $field_username = param('username');
+  die "BACK: Username must be lowercase alphabetic!\n"
+    unless $field_username =~ /^[a-z]+$/;
+
+  my $field_email = param('email');
+  die "BACK: Your email address must be non-empty!\n"
+    unless $field_email =~ /\S/;
+
+  my $field_real = param('real');
+  die "BACK: Your real name must be non-empty!\n"
+    unless $field_real =~ /\S/;
+
+  ## fields are authenticated, so now lets try to add...
+  open PW, "+>>$target_htpasswd" or
+    die "Cannot attach to $target_htpasswd: $!";
+  flock PW, 2;			# wait for exclusive lock
+  ## begin critical region (only one proc at a time gets past here)
+
+  ## first, ensure that we don't have a duplicate username
+  seek PW, 0, 0;		# beginning of file
+  while (<PW>) {
+    my ($user) = split ":";
+    die "BACK: sorry, that username is already taken\n"
+      if $user eq $field_username;
+  }
+  ## good name, so add it
+  seek PW, 0, 2;		# end of file
+  my $password = &random_password;
+  print PW
+    join (":", $field_username, crypt($password,"aa")), "\n";
+  &send_password($field_email, $field_username, $password);
+  &record_user($field_email, $field_username, $field_real);
+  close PW;
+  ## end critical region
+  print +
+    h1("You've been added!"), $N,
+    p, "You've been added! Your password is arriving in email!", $N,
+    end_html;
+  exit 0;
+};
+if ($@) {			# somebody died
+  if ($@ =~ /^BACK: (.*)/) {	# one of our BACK errors?
+    print +
+      h1('Form entry error'), $N,
+      p, $1, $N;
+  } else {			# nope, an internal error
+    $_ = $@;
+    s/&/&amp;/g;
+    s/</&lt;/g;
+    s/>/&gt;/g;
+    print +
+      h1('Form entry INTERNAL error'), $N,
+      p, 'The error message was ', $N,
+      code(pre($_)), $N;
+  }
+  print
+    p, 'Go back and try again!', $N,
+    end_html, $N;
+  exit 0;
+}
+
+sub random_password {
+  "password";
+}
+
+sub send_password {
+  my ($email, $user, $pass) = @_;
+}
+
+sub record_user {
+  my ($email, $user, $real) = @_;
+}

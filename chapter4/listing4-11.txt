@@ -1,0 +1,58 @@
+#!/home/merlyn/bin/perl -Tw
+
+$|++;
+use strict;
+use CGI ":standard";
+use HTTP::Daemon;
+use HTTP::Status;
+use Chatbot::Eliza;
+
+my $HOST = "www.stonehenge.com"; # where are we?
+my $TIMEOUT = 120;              # number of seconds until this doc dies
+
+my $d = new HTTP::Daemon (LocalAddr => $HOST);
+my $unique = join ".", time, $$, int(rand 1000);
+my $url = $d->url.$unique;
+
+defined(my $pid = fork) or die "Cannot fork: $!";
+if ($pid) {                     # I am, apparently, the parent
+  print redirect($url);
+  exit 0;
+}
+close(STDOUT);                  # to let the kid live on
+
+my $eliza = new Chatbot::Eliza;
+
+{
+  alarm($TIMEOUT);              # (re-)set the deadman timer
+  my $c = $d->accept;           # $c is a connection
+  my $r = $c->get_request;      # $r is a request
+  if ($r->url->epath ne "/$unique") {
+    $c->send_error(RC_FORBIDDEN, "I don't think we've made an appointment!");
+    close $c;
+    redo;
+  }
+  $c->send_basic_header;
+  $CGI::Q = new CGI $r->content;
+  my $eliza_says = "How do you do?  Please tell me your problem.";
+  my $message = param("message") || "";
+  if ($message) {
+    param("message","");
+    $eliza_says = $eliza->transform($message);
+  }
+  print $c
+    header,
+    start_html("The doctor is in!"),
+    h1("The doctor is in!"),
+    hr,
+    startform("POST", $url),
+    p($eliza_says),
+    p, textfield(-name => "message", -size => 60),
+    p, submit("What do you say, doc?"),
+    p("Note: the doctor is patient, but waits only $TIMEOUT seconds, so hurry!"),
+    endform,
+    hr,
+    end_html;
+  close $c;
+  redo;
+}

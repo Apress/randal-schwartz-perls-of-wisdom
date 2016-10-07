@@ -1,0 +1,115 @@
+#!/usr/bin/perl -Tw
+use strict;
+$|++;
+
+use CGI qw(:all);
+
+### globals
+
+## mapping from SQL column name to XML state
+my @column_def = map [ m{^(\S+)\s+(.*)} ], <<'END_DEFINITION' =~ /(.+)/g;
+Name       perl-mongers group name
+City       perl-mongers group location city
+State      perl-mongers group location state
+Country    perl-mongers group location country
+Tsar_name  perl-mongers group tsar name
+Tsar_email perl-mongers group tsar email
+Web        perl-mongers group web
+END_DEFINITION
+
+## reductions of data above
+my @columns = map $_->[0], @column_def;
+my %column_mapping = map { $_->[1] => $_->[0] } @column_def;
+
+## end globals
+
+print
+  header,
+  start_html("Search the mongers info"),
+  h1("Search the mongers info"),
+  hr,
+  start_form,
+  table({ Border => 1, Cellspacing => 0, Cellpadding => 2 },
+        (map {
+          Tr(th($_), td(textfield(-Name => $_, -Default => '%')))
+        } @columns),
+        Tr(td({ Colspan => 2},
+              p("Use % for any chars, and ? for a single char"))),
+       ),
+  reset,
+  submit,
+  end_form,
+  hr;
+
+&handle_form() if param();
+
+print end_html;
+
+sub handle_form {
+  require XML::Parser;
+  require DBI;
+  require LWP::Simple;
+
+  my $dbh = DBI->connect('dbi:RAM:', undef, undef, {RaiseError => 1});
+  $dbh->do("CREATE TABLE table1 (".
+           (join ", ", map "$_ TEXT", @columns).
+           ")");
+  my $insert = $dbh->prepare("INSERT INTO table1 (".
+                             (join ", ", @columns).
+                             ") VALUES (".
+                             (join ",", ("?") x @columns).")");
+
+  my $data = LWP::Simple::get("http://www.pm.org/XML/perl_mongers.xml");
+  MyParser::doParse($data, $insert);
+  
+  my $extract = $dbh->prepare("SELECT ".
+                              (join ", ", @columns).
+                              " FROM table1".
+                              " WHERE ".
+                              (join " AND ", map "$_ LIKE ?", @columns).
+                              " ORDER BY Name");
+
+  $extract->execute(map {defined param($_) ? param($_) : "%"} @columns);
+
+  print table({Border => 1, Cellspacing => 0, Cellpadding => 2},
+              Tr(th(\@columns)),
+              map Tr(td($_)), @{$extract->fetchall_arrayref});
+}
+
+BEGIN {
+  package MyParser;
+
+  my @state;
+  my %one_group_data;
+  my $insert_handle;
+
+  sub doParse {
+    my $data = shift;
+    $insert_handle = shift;     ## outer scope
+
+    XML::Parser->new(Style => 'Stream')->parse($data);
+  }
+
+  sub StartTag {
+    my ($parser, $type) = @_;
+    push @state, $type;
+    if ("@state" eq "perl-mongers group") {
+      %one_group_data = ();
+    }
+  }
+
+  sub EndTag {
+    my ($parser, $type) = @_;
+    if ("@state" eq "perl-mongers group") {
+      $insert_handle->execute(@one_group_data{@columns});
+    }
+    pop @state;
+  }
+  
+  sub Text {
+    my $place = $column_mapping{"@state"};
+    if (defined $place) {
+      $one_group_data{$place} .= $_;
+    }
+  }
+}

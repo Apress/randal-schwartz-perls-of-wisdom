@@ -1,0 +1,27 @@
+#!/usr/bin/perl -Tw
+use strict;
+$|++;
+
+## BEGIN CONFIG
+my $ACTIVE = "/home/merlyn/Web/Balance/active";
+## END CONFIG
+
+use CGI qw(redirect);
+use CGI::Carp qw(fatalsToBrowser);
+
+open ACTIVE, $ACTIVE or die "Cannot open $ACTIVE: $!";
+my($selected_host, $total_scale);
+while (<ACTIVE>) {
+  my($host, $loadav) = split;
+  $loadav = 0.01 if $loadav < 0.01;
+  my($scale) = 1/($loadav*$loadav);
+  $total_scale += $scale;
+  $selected_host = $host if rand($total_scale) < $scale;
+}
+die "Cannot find a valid host" unless $selected_host;
+my $redirect = "http://$selected_host";
+$redirect .= "$ENV{PATH_INFO}";
+$redirect .= "?$ENV{QUERY_STRING}" if length $ENV{QUERY_STRING};
+print redirect($redirect);
+
+

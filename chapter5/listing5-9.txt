@@ -1,0 +1,34 @@
+#!/home/merlyn/bin/perl -Tw
+use strict;
+$|++;
+
+my $GO_LOG = "/home/merlyn/Web/golog";
+
+my $result = eval {
+  die unless defined (my $res = $ENV{PATH_INFO});
+  die unless $res =~ s/^\///;
+  my $query = $ENV{QUERY_STRING};
+  if (defined $query and length $query) {
+    $res .= "?$query";
+  }
+  $res;
+};
+if ($@) {
+  print "Status: 404 Not Found\n\n";
+  exit 0;
+}
+print "Location: $result\n\n";
+my $pid = fork;
+$pid = 0 unless defined $pid;   # be the kid if fork failed
+exit 0 if $pid;
+## child...
+close(STDOUT);
+open GOLOG, ">>$GO_LOG" or die "Cannot open $GO_LOG: $!";
+flock(GOLOG,2);                 # wait for exclusive
+seek GOLOG, 0, 2;               # seek to end, refresh buffers
+print GOLOG join("\t",
+                 scalar localtime,
+                 $result,
+                 ($ENV{HTTP_REFERER} || "[unknown]")), "\n";
+close GOLOG;
+

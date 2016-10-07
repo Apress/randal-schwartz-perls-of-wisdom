@@ -1,0 +1,95 @@
+#!/usr/bin/perl -Tw
+use strict;
+use File::Basename;
+
+## random dealer SSI-CGI, by Randal L. Schwartz (c) 1996
+
+## <!--#include virtual="/cgi-bin/random/DOC-PATH/SUBDIR.random"-->
+
+## where DOC-PATH has to be the *same* as the path to the including
+## doc and SUBDIR.random has to exist below that directory.
+## SUBDIR.random contains *.log files which must be httpd-writeable.
+## Random fairly-dealt *.log will cause return of corresponding *
+## (sans .log) inline.  Of course, these notes are cryptic. :-)
+
+## set the path
+$ENV{"PATH"} = "/usr/local/bin:/usr/ucb:/bin:/usr/bin";
+
+## return $_[0] encoded for HTML entities
+sub ent {
+  local $_ = shift;
+  $_ =~ s/[<&>]/"&#".ord($&).";"/ge;  # entity escape
+  $_;
+}
+
+## death handler, presumes no output yet
+$SIG{"__DIE__"} = $SIG{"__WARN__"} = sub {
+  my $why = shift;
+  chomp $why;
+  $why = ent $why;
+  print "Content-type: text/html\n\n[$why]\n";
+  exit 0;
+};
+
+## get CGI/SSI variables
+my $DOCUMENT_URI = $ENV{"DOCUMENT_URI"};
+my $PATH_INFO = $ENV{"PATH_INFO"};
+my $PATH_TRANSLATED = $ENV{"PATH_TRANSLATED"};
+
+## compute directory names of requested path and document path
+my $doc_dir = dirname $DOCUMENT_URI;
+my $info_dir = dirname $PATH_INFO;
+
+## security checks:
+
+## is user asking for immediate subdir of the doc from which we're
+## being included?
+$doc_dir eq $info_dir
+        or die "security error: $doc_dir ne $info_dir";
+
+## is user asking for directory ending in ".random"?
+$PATH_TRANSLATED =~ /\.random$/
+  or die "security error: $PATH_TRANSLATED does not end in .random";
+-d $PATH_TRANSLATED
+  or die "security error: $PATH_TRANSLATED is not a directory";
+
+## everything's validated, so go for it.
+## get the candidate log files:
+opendir PT, $PATH_TRANSLATED or die "opendir: $!";
+my @files = map "$PATH_TRANSLATED/$_", grep /\.log$/, readdir PT;
+closedir PT;
+
+## select a weighted random candidate:
+my $total_weight = 0;
+my $winner;
+srand;
+for (@files) {
+  my $this_weight = (86400 * -M) ** 2; # age in seconds, squared
+  $total_weight += $this_weight;
+  $winner = $_ if rand($total_weight) < $this_weight;
+}
+## $winner might still be undef at this point, in which case we'll die
+## on the following...
+
+## untaint and open log:
+$winner =~ /(.*)/s;
+open LOG, ">>$1"
+  or die "Cannot append to $1: $!";
+
+## wait for it to be ours:
+flock LOG, 2;
+
+## record this hit:
+seek LOG, 0, 2;
+print LOG scalar localtime, " to $ENV{'REMOTE_ADDR'}\n";
+close LOG;
+
+## compute URL for redirect
+## (original request path and basename of winner, without log):
+my ($winner_url) = ("$PATH_INFO/" . basename $winner) =~ /(.*)\.log$/s;
+
+## trigger an SSI redirect so that the server will fetch the data (and log it)
+## (It had better make sense inside text/html :-)
+print "Location: $winner_url\n\n";
+
+## done!

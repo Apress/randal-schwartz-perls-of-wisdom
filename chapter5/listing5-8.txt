@@ -1,0 +1,63 @@
+#!/usr/bin/perl -Tw
+use strict;
+$|++;
+
+use URI::URL;
+
+my %count = ();
+while (<>) {
+  my ($ref) = split; ## may require adjustment
+  my $url = url $ref;
+  next unless ($url->scheme || "") eq "http";
+  next unless my %form = eval { $url->query_form };
+  my @search_fields = do {
+    local $_ = lc $url->host;
+    if (0) { () }
+    elsif (/\baltavista\b/) { "q" }
+    elsif (/\bnetfind\.aol\.com$/) { qw(s search) }
+    elsif (/\baskjeeves\.com$/) { "ask" }
+    elsif (/\bdejanews\.com$/) { () }
+    elsif (/\bdigiweb\.com$/) { "string" }
+    elsif (/\bdogpile\.com$/) { "q" }
+    elsif (/\bexcite\.com$/) { qw(s search) }
+    elsif (/\bhotbot\.com$/) { "mt" }
+    elsif (/\binference\.com$/) { "query" }
+    elsif (/\binfoseek\.com$/) { qw(oq qt) }
+    elsif (/\blooksmart\.com$/) { "key" }
+    elsif (/\blycos\b/) { "query" }
+    elsif (/\bmckinley\.com$/) { "search" }
+    elsif (/\bmetacrawler\b/) { "general" }
+    elsif (/\bnlsearch\.com$/) { "qr" }
+    elsif (/\bprodigy\.net$/) { "query" }
+    elsif (/\bsearch\.com$/) { qw(oldquery query) }
+    elsif (/\bsenrigan\.ascii\.co\.jp$/) { "word" }
+    elsif (/\bswitchboard\.com$/) { "sp" }
+    elsif (/\bwebcrawler\.com$/) { qw(search searchtext text) }
+    elsif (/\bedit\.my\.yahoo\.com$/) { () } ## must come before yahoo.com
+    elsif (/\byahoo\b/) { "p" }
+    else { "UNKNOWN" }
+  };
+  next unless @search_fields;
+  my %wanted = map { $_, 1 } @search_fields;
+  my @show_fields = grep { $wanted{lc $_} } keys %form;
+  if (@show_fields) {
+    for (@show_fields) {
+      $count{$url->host}{$form{$_}}++;
+    }
+  } else {
+    print $url->host, "\n";
+    for (sort keys %form) {
+      print "?? $_ => $form{$_}\n";
+    }
+  }
+}
+
+for my $host (sort keys %count) {
+  my $hostinfo = $count{$host};
+  for my $text (sort keys %$hostinfo) {
+    my $times = $hostinfo->{$text};
+    print "$host: $text";
+    print " ($times times)" if $times > 1;
+    print "\n";
+  }
+}

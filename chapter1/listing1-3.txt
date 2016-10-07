@@ -1,0 +1,126 @@
+#!/usr/bin/perl -w
+use strict;
+$|++;
+
+### CONFIG
+
+my $LOCAL = "/Users/merlyn/MIRROR/MINICPAN/";
+
+### END CONFIG
+
+## core -
+use File::Spec::Functions qw(catfile devnull);
+use Safe qw();
+
+## Compress::Zlib -
+use Compress::Zlib qw(gzopen $gzerrno);
+
+## Archive::Tar -
+use Archive::Tar qw();
+
+my $days_ago = 0;
+for my $distro (get_distro_sorted_by_age()) { # list of hashrefs
+
+  ## paging by days old
+  unless ((time - $distro->{modtime})/86400 < $days_ago + 1) {
+    print "[more]\n";
+    <STDIN>;
+    print ++$days_ago, " days ago:\n";
+  }
+
+  show_distro($distro);
+}
+
+exit 0;
+
+sub get_distro_sorted_by_age {
+  my %seen;
+  my @distros;
+
+  my $details = catfile($LOCAL, qw(modules 02packages.details.txt.gz));
+  for (uncompress_and_grab_after_blank($details)) {
+    my ($module, $version, $path) = split;
+    next if $path =~ m{/perl-5}; # skip Perl distributions
+
+    next if $seen{$path}++;
+
+    ## native absolute file:
+    my $local_file = catfile($LOCAL, split "/", "authors/id/$path");
+
+    push @distros, {
+                    filename => $local_file,
+                    path => $path,
+                    module => $module,
+                    modtime => (stat($local_file))[9],
+                   };
+  }
+  ## return distros sorted by descending modtimes
+  sort {$b->{modtime} <=> $a->{modtime}} @distros;
+}
+
+sub show_distro {
+  my $distro = shift;
+
+  my $data = get_module_data();
+  my $at = get_archive_tar_for($distro->{filename}) or return;
+
+  my $description = $data->{$distro->{module}}{description} || "";
+  print "$distro->{path} ($description)\n";
+
+  my @readmes = sort grep m{/README\z}, $at->list_files();
+
+  for my $readme (@readmes) {
+    print "| $readme\n";
+    my $content = $at->get_content($readme);
+    for ($content =~ /([^\cM\cJ]*)\cM?\cJ?/g) {
+      print "| | $_\n";
+    }
+  }
+
+}
+
+BEGIN {
+  my $data;                     # cached value
+
+  sub get_module_data {
+    $data ||= do {
+      my $modlist = catfile($LOCAL, qw(modules 03modlist.data.gz));
+      no strict;
+      my $ret = Safe->new("CPAN::Safe1")->
+        reval(join("",
+                   uncompress_and_grab_after_blank($modlist),
+                   "CPAN::Modulelist->data"));
+      die $@ if $@;
+      $ret;
+    };
+  }
+}
+
+sub uncompress_and_grab_after_blank {
+  my $file = shift;
+  my $inheader = 1;
+  my @return = ();
+
+  my $gz = gzopen($file, "rb") or die "Cannot open $file: $gzerrno";
+
+  while ($gz->gzreadline($_) > 0) {
+    if ($inheader) {
+      $inheader = 0 unless /\S/;
+      next;
+    }
+
+    push @return, $_;
+  }
+  @return;
+}
+
+sub get_archive_tar_for {
+  my $filename = shift;
+  my $at = eval {
+    local *STDERR;
+    open STDERR, ">".devnull();
+    Archive::Tar->new($filename) or die "Archive::Tar failed on $filename\n";
+  };
+  warn $@ if $@;
+  $at;
+}

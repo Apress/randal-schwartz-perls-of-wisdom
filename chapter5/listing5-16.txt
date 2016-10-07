@@ -1,0 +1,84 @@
+#!/usr/bin/perl -w
+use strict;
+$|++;
+
+## CONFIG
+
+my $ALL_CLEAR_INTERVAL = "never"; # how often to repeat "all clear" signal
+my $TEST_FAIL_INTERVAL = "30 minutes"; # how often to repeat test failed
+
+sub SEND_REPORT {               # what do I do with a report?
+  ## open STDOUT, "|sendmail 5035551212\@vtext.com" or die "sendmail: $!";
+  @_ = "ALL CLEAR\n" unless @_;
+  print @_;
+}
+
+## END CONFIG
+
+use File::Temp qw(tempfile);    # core
+use File::Basename qw(dirname); # core
+use Test::Harness::Straps ();   # core
+use Cache::FileCache ();        # CPAN
+
+my $errors = tempfile();
+open SAVE_STDERR, ">&STDERR" or warn "dup 2 to SAVE_STDERR: $!";
+
+my $cache = Cache::FileCache->new({namespace => 'healthcheck_reporter'});
+
+chdir dirname($0) or warn "Cannot chdir to dirname of $0: $!";
+
+my $strap = Test::Harness::Straps->new;
+
+my @failed;
+
+for my $test_file (glob "*.t t/*.t") {
+  my %results;
+  {
+    open STDERR, ">&", $errors or print "dup $errors to STDERR: $!";
+    %results = $strap->analyze_file($test_file);
+    open STDERR, ">&", \*SAVE_STDERR or print "dup SAVE_STDERR TO STDERR: $!";
+  };
+  push @failed, map {
+    $results{details}[$_]{ok} ? () :
+      ["$test_file:".($_+1) => $results{details}[$_]{name}]
+  } 0..$#{$results{details}};
+  push @failed, ["$test_file:wait" => $results{wait}] if $results{wait};
+}
+
+if (-s $errors) {
+  seek $errors, 0, 0;
+  local $/;
+  push @failed, ["errors" => <$errors>];
+}
+
+my $key = join " ", map $_->[0], @failed;
+
+if ($key) {                     # bad report
+  $cache->remove("");           # blow away good report stamp
+  if ($cache->get($key)) {      # seen this recently?
+    ## print "ignoring duplicate report for $key\n";
+  } else {
+    $cache->set($key, 1, $TEST_FAIL_INTERVAL);
+
+    my @report;
+
+    for (@failed) {
+      my ($key, $value) = @$_;
+      my @values = split /\n/, $value;
+      @values = ("") unless @values; # ensure at least one line
+      push @report, "$key = $_\n" for @values;
+    }
+
+    SEND_REPORT(@report);
+  }
+} else {                        # good report
+  if ($cache->get("")) {        # already said good?
+    ## print "ignoring good report\n";
+  } else {
+    $cache->clear();            # all is forgiven
+    $cache->set("", 1, $ALL_CLEAR_INTERVAL);
+
+    SEND_REPORT();              # empty means good report
+  }
+}
+

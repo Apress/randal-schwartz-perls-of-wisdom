@@ -1,0 +1,75 @@
+#!/usr/bin/perl -Tw
+use strict;
+$|++;
+
+## constants
+my @STATES = qw(
+  AK AL AR AZ CA CO CT DE FL GA HI IA ID IL IN KS KY LA MA MD ME MI MN MO MS
+  MT NC ND NE NH NJ NM NV NY OH OK OR PA RI SC SD TN TX UT VA VT WA WI WV WY
+);
+## configuration
+my @QUERY_FIELDS =
+  (
+   ['firstname', 'person.firstname is ?'],
+   ['lastname', 'person.lastname is ?'],
+   ['street', 'person.street is ?'],
+   ['city', 'person.city is ?'],
+   ['state', 'person.state is ?',
+    sub {
+      my $v = shift;
+      return undef unless $v =~ /\S/;
+      return undef if $v eq "n/a";
+      $v;
+    }],
+   ['zip', 'person.zip is ?'],
+  );
+## end configuration
+
+use CGI qw(:all);
+
+print header, start_html, h1('Query');
+
+print hr, start_form;
+
+print table({-bgcolor => '#ffff88'},
+            Tr(td("First:"), td(textfield('firstname')),
+               td("Last:"), td(textfield('lastname'))),
+            Tr(td("Street:"), td(textfield('street')),
+               td("City:"), td(textfield('city'))),
+            Tr(td("State:"),
+               td(popup_menu('state', ['n/a', @STATES], 'n/a')),
+               td("Zip:"), td(textfield('zip', '', 10)),
+               td(submit)));
+
+print end_form, hr;
+
+{
+  my @sqls;
+  my @vals;
+
+  for (@QUERY_FIELDS) {
+    next unless defined(my $val = param($_->[0]));
+    if ($_->[2]) {
+      next unless defined($val = $_->[2]->($val));
+    } else {
+      $val =~ s/^\s+//;
+      $val =~ s/\s+$//;
+      next unless length $val;
+    }
+    push @sqls, $_->[1];
+    push @vals, $val;
+  }
+  if (@sqls) {
+    my $sql = "select id from person where ".join(" and ", @sqls);
+    print h2("Resulting query");
+    print pre(escapeHTML($sql));
+    print pre(escapeHTML(join ", ", map { qq{"$_"} } @vals));
+
+    ## typical use:
+    ## my $sth = $dbh->prepare($sql);
+    ## $sth->execute(@vals);
+    ## while (my ($id) = $sth->fetchrow_array) { ... }
+  }
+}
+
+print end_html;

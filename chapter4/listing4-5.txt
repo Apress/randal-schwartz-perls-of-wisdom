@@ -1,0 +1,74 @@
+#!/home/merlyn/bin/perl -Tw
+use strict;
+
+use CGI ":standard";
+
+## following must be writable by CGI user:
+use constant CHATFILE => "/home/merlyn/Web/chatfile";
+use constant MAXENTRIES => 32;
+
+sub ent {                       # translate to entity
+  local $_ = shift;
+  s/["<&>"]/"&#".ord($&).";"/ge; # entity escape
+  $_;
+}
+
+print header, start_html("Chat!"), h1("Chat!");
+eval { &main };
+if ($@) {
+  print hr, "ERROR: ", ent($@), hr;
+  exit 0;
+}
+
+sub main {
+  my @entries = get_old_entries();
+  print hr, start_form;
+  print p, "name: ", textfield("name","", 40);
+  print "  email: ", textfield("email", "", 30), br;
+  print "message: ", textarea("message", "", 4, 40, 1);
+  print br, p, "(Submit an empty message to listen)", submit;
+  print end_form, hr;
+  for my $entry (@entries) {
+    print p(), ent($entry->param("name"));
+    print " (", ent($entry->param("email")), ") at ";
+    print ent(scalar localtime $entry->param("time")), " said: ";
+    print p(), ent($entry->param("message"));
+  }
+  print end_html;
+}
+
+sub get_old_entries {
+  use IO::File;
+
+  my @entries = ();
+  my $chatfh = new IO::File "+<".CHATFILE
+    or die "Cannot open ".CHATFILE.": $!";
+  ## begin critical region (keep short)
+  flock $chatfh, 2;
+  seek $chatfh, 0, 0;
+  while (not eof $chatfh) {
+    push @entries, new CGI $chatfh;
+  }
+  my $message = param("message");
+  if (defined $message and $message =~ /\S/) {
+    ## must transfer limited query to file
+    my $saver = new CGI {"time" => time};
+    for (qw(name email message)) {
+      my $val = param($_);
+      $val = "" unless defined $val;
+      substr($val, 1024) = "" if length $val > 1024;
+      $saver->param($_, $val);
+    }
+    unshift @entries, $saver;
+    splice @entries, MAXENTRIES
+      if @entries > MAXENTRIES;
+    seek $chatfh, 0, 0;
+    truncate $chatfh, 0;
+    for my $entry (@entries) {
+      $entry->save($chatfh);
+    }
+  }
+  close $chatfh;
+  ## end critical region
+  @entries;
+}

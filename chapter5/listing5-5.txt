@@ -1,0 +1,18 @@
+#!/usr/bin/perl -w
+use strict;
+
+# $Id: throttle-cleaner,v 1.1 1999/10/28 19:44:09 merlyn Exp $
+
+my $DIR = "/home/merlyn/lib/Apache/Throttle";
+my $SECS = 360;                 # more than Stonehenge::Throttle $WINDOW
+
+chdir $DIR or die "Cannot chdir $DIR: $!";
+opendir DOT, "." or die "Cannot opendir .: $!";
+my $when = time - $SECS;
+while (my $name = readdir DOT) {
+  next unless -f $name;
+  next if (stat($name))[8] > $when;
+  ## warn "unlinking $name\n";
+  unlink $name;
+}
+

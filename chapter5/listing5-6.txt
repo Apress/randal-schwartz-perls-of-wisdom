@@ -1,0 +1,22 @@
+use CGI;
+use Fcntl qw(LOCK_EX LOCK_NB);
+
+open HIGHLANDER, ">>/tmp/renew.cgi.highlander" or die "Cannot open highlander: $!";
+
+{
+  my $count = 0;
+  {
+    flock HIGHLANDER, LOCK_EX | LOCK_NB and last;
+    sleep 1;
+    redo if ++$count < 10;
+    ## couldn't get it after 10 seconds...
+    my $host = $ENV{REMOTE_HOST};
+    $host = $ENV{REMOTE_ADDR} unless defined $host;
+    warn "$0 @ ".(localtime).": highlander abort for $host after 10 seconds\n";
+    print CGI::header(-status => 503,
+                      -retry_after => 30,
+                      -type => 'text/plain'),
+                        "Our server is overloaded.  Please try again in a few minutes.\n";
+    exit 0;
+  }
+}

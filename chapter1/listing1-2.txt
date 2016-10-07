@@ -1,0 +1,27 @@
+##### LISTING 1-2 #####
+final report:
+
+   167.341 /usr/lib/perl5/5.00503/man/man3/WWW::Search::Euroseek.3
+   154.020 /usr/lib/perl5/5.00503/man/man3/GTop.3
+    65.528 /usr/lib/perl5/5.00503/man/man3/Tk::X.3
+    56.616 /usr/man/man1/mh-chart.1
+    45.591 /usr/man/man1/tar.1
+    40.133 /usr/lib/perl5/5.00503/man/man3/Bio::SeqFeatureI.3
+    39.012 /usr/lib/perl5/5.00503/man/man3/XML::BMEcat.3
+    37.714 /usr/lib/perl5/5.00503/man/man3/less.3
+    37.200 /usr/lib/perl5/5.00503/man/man3/Business::UPC.3
+    36.809 /usr/lib/perl5/5.00503/man/man3/Number::Spell.3
+[...many lines omitted...]
+     7.179 /usr/man/man1/tiffsplit.1
+     7.174 /usr/lib/perl5/5.00503/man/man3/Tie::NetAddr::IP.3
+     7.018 /usr/lib/perl5/5.00503/man/man3/DaCart.3
+     6.957 /usr/man/man3/form_driver.3x
+     6.899 /usr/man/man7/samba.7
+     6.814 /usr/lib/perl5/5.00503/man/man3/Array::Reform.3
+     6.740 /usr/lib/perl5/5.00503/man/man3/Net::GrpNetworks.3
+     6.314 /usr/man/man5/rcsfile.5
+     6.210 /usr/lib/perl5/5.00503/man/man3/Network::IPv4Addr.3
+     6.002 /usr/lib/perl5/5.00503/man/man3/Net::IPv4Addr.3
+     5.881 /usr/man/man8/kbdrate.8
+     5.130 /usr/lib/perl5/5.00503/man/man3/Net::Netmask.3
+

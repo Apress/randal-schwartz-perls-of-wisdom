@@ -1,0 +1,70 @@
+#!/usr/bin/perl
+use strict;
+$|++;
+
+use CGI::Pretty ":standard";
+use CGI::Carp qw(fatalsToBrowser); # only for debugging
+$ENV{PATH} = "/bin:/usr/bin:/usr/local/bin";
+
+## CONFIG
+
+my $topdir = "/home/merlyn/Web/Bundle";
+
+## END CONFIG
+
+chdir $topdir or die "Cannot chdir: $!";
+
+## final pass
+
+if (my @names = param('names')) {
+  print header("application/x-tar-gzip");
+  @names = grep !(/^\// or grep /^[-.]/, split /\//), @names;
+  exec "tar", "cfz", "-", @names if @names;
+  die "cannot exec tar: $!";
+}
+
+## second pass
+
+if (my $dist = param('dist')) {
+  $dist =~ / ^ (?! [-.]) ([^\/]+) $ /x and -d $dist and not -l $dist or die "bad dist";
+  $dist = $1;                   # now untainted
+
+  require File::Find;
+  my @names;
+  File::Find::find
+      (sub {
+         return $File::Find::prune = 1 if /^(-|\..)/s;
+         push @names, $File::Find::name if -f and not -l;
+       }, $dist);
+  print header, start_html("Download a distribution");
+  print h1("Select your items within this distribution");
+
+  print start_form(-action => url()."/".time().".tar.gz");
+  print p("Select your items:");
+  print
+    table({cellspacing => 0, cellpadding => 2, border => 0},
+          Tr(th(["Filename",
+                 "Size",
+                 "Last modified"])),
+          map Tr(td([checkbox("names", 1, $_, $_),
+                     sprintf("%dK", (1023 + -s)/1024),
+                     scalar(localtime +(stat)[9])])),
+          @names);
+  print submit;
+  print end_form, end_html;
+  exit 0;
+}
+
+## first pass
+
+print header, start_html("Download a distribution");
+print h1("Select your distribution");
+
+opendir DOT, "." or die "Cannot opendir: $!";
+my @names = sort grep !/^[-.]/ && -d && ! -l, readdir DOT;
+closedir DOT;
+print start_form, p("Select your distribution:");
+print radio_group(-name => "dist", -values => \@names, -columns => 1);
+print submit;
+print end_form, end_html;
+exit 0;

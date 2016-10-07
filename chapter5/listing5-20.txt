@@ -1,0 +1,101 @@
+#!/usr/bin/perl -Tw
+use strict;
+$|++;
+
+use CGI qw(:all);
+
+## cookie check
+my $browser = cookie("browser");
+if (defined $browser) {         # got a good browser
+  Delete("_cookiecheck");       # don't let this leak further
+} else {                        # no cookie? set one
+  require MD5;
+  my $cookie = cookie
+    (-name => 'browser',
+     -value => MD5->hexhash(MD5->hexhash(time.{}.rand().$$)));
+
+  if (defined param("_cookiecheck")) { # already tried!
+    print +(header(-cookie => $cookie),
+            start_html("Missing cookies"),
+            h1("Missing cookies"),
+            p("This site requires a cookie to be set. Please permit this."),
+            startform, submit("OK"), endform,
+            end_html);
+  } else {
+    param("_cookiecheck", 1);   # prevent infinite loop
+    print redirect (-cookie => $cookie, -uri => self_url());
+  }
+  exit 0;
+}
+
+## At this point, $browser is now the unique ID of the browser
+
+require File::Cache;
+my $cache = File::Cache->new({namespace => 'cookiemaker',
+                              username => 'nobody',
+                              filemode => 0666,
+                              expires_in => 3600, # one hour
+                             });
+
+## first, some housekeeping
+unless ($cache->get(" _purge_ ")) {
+  $cache->purge;                # remove expired objects
+  $cache->set(" _purge_ ", 1, 3600 * 4); # purge every four hours
+}
+
+my $user = $cache->get($browser); ## either the logged-in user, or undef
+
+print header,start_html('session demonstration'),h1('session demonstration');
+
+## handle requested transitions (login or logout)
+if (defined $user and defined param("_logout")) {
+  Delete("_logout");
+  $cache->remove($browser);
+  print p("You are no longer logged in as $user.");
+  undef $user;
+} elsif (not defined $user and defined (my $try_user = param("_user"))) {
+  Delete("_user");
+  my $try_password = param("_password");
+  Delete("_password");
+  if ($try_user =~ /\A\w+\z/ and verify($try_user, $try_password)) {
+    $user = $try_user;
+    print p("Welcome back, $user.");
+  } else {
+    print p("I'm sorry, that's not right.");
+  }
+}
+
+## handle current state (possibly after transition)
+if (defined $user) {
+  $cache->set($browser,$user);  # update cache on each hit
+  print p("You are logged in as $user.");
+  print startform, hidden("_logout", 1), submit("Log out"), endform;
+} else {
+  print p("You are not logged in.");
+  print
+    startform,
+      table({-border => 1, -cellspacing => 0, -cellpadding => 2},
+            Tr(th("username:"),
+               td(textfield("_user")),
+               td({-rowspan => 2}, submit("login"))),
+            Tr(th("password:"), td(password_field("_password")))),
+              endform;
+}
+
+## rest of page would go here, paying attention to $user
+
+for ([Cookies => \&cookie], [Params => \&param]) {
+  my ($title, $f) = @$_;
+
+  print h2($title), table 
+    ({-border => 0, -cellspacing => 0, -cellpadding => 2},
+     map (Tr(th(escapeHTML($_)), td(escapeHTML(join ", ", $f->($_)))),
+        $f->()));
+}
+
+## sample verification
+
+sub verify {
+  my($user, $password) = @_;
+  return index($password, $user) > -1; # require password to contain user
+}

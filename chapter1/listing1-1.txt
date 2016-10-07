@@ -1,0 +1,58 @@
+##### LISTING 1-1 #####
+#!/usr/bin/perl -w
+use strict;
+$|++;
+
+## config
+my $DATAFILE = "/home/merlyn/.manfog";
+## end config
+
+use Lingua::EN::Fathom;
+use Fcntl qw(O_CREAT O_RDWR);
+use MLDBM qw(DB_File Storable);
+use File::Find;
+use sigtrap qw(die normal-signals);
+
+tie my %DB, 'MLDBM', $DATAFILE, O_CREAT|O_RDWR, 0644 or die "Cannot tie: $!";
+
+my @manpages;
+
+find sub {
+  return unless -f and not -l and $_ ne "whatis";
+  my $size = -s;
+  return if $size < 80 or $size > 16384;
+  push @manpages, $File::Find::name;
+}, map "$_/./", split /:/, $ENV{MANPATH};
+
+my $fat = Lingua::EN::Fathom->new;
+
+for my $name (@manpages) {
+  next unless my ($dir, $file) = $name =~ m{(.*?)/\./(.*)}s;
+  $name = "$dir/$file";
+  print "$name ==> ";
+  my $mtime = (stat $name)[9];
+  if (exists $DB{$name} and $DB{$name}{mtime} == $mtime) {
+    print "... already computed\n";
+    next;
+  }
+
+  my $text = `cd $dir && deroff $file`;
+  (print "cannot deroff: exit status $?"), next if $?;
+  $fat->analyse_block($text);
+
+  my %info = ( mtime => $mtime );
+  for my $meth (qw(fog flesch kincaid)) {
+    $info{$meth} = $fat->$meth();
+  }
+  $DB{$name} = \%info;
+  print "... done\n";
+}
+
+print "final report:\n\n";
+
+my $kind = "fog";
+
+my %db = %DB;                   # speed up the cache
+for my $page (sort { $db{$b}{$kind} <=> $db{$a}{$kind} } keys %db) {
+  printf "%10.3f %s\n", $db{$page}{$kind}, $page;
+}

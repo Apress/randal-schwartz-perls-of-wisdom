@@ -1,0 +1,32 @@
+#!/usr/bin/perl
+use Test::More tests => 9;
+use WWW::Mechanize;
+isa_ok(my $a = WWW::Mechanize->new, "WWW::Mechanize");
+
+$a->timeout(1);
+$a->get("http://search.cpan.org/");
+is($a->status, 200, "fetched /");
+like($a->title, qr/The CPAN Search Site/, "/ title matches");
+SKIP: {
+  ok($a->follow_link( text => 'FAQ' ), "follow FAQ link")
+    or skip "missing FAQ link", 2;
+ SKIP: {
+    is($a->status, 200, "fetched FAQ page")
+      or skip "bad FAQ fetch", 1;
+    like($a->content, qr/Frequently Asked Questions/, "FAQ content matches");
+    $a->back;
+  }
+}
+SKIP: {
+  ok($a->form_number(1), "select query form")
+    or skip "cannot select query form", 2;
+  $a->set_fields(query => "PETDANCE", mode => 'author');
+  $a->click();
+ SKIP: {
+    is($a->status, 200, "query returned good for 'author'")
+      or skip "missing author page", 1;
+    like($a->content, qr/Andy Lester/, "found Andy Lester");
+    $a->back;
+  }
+}
+

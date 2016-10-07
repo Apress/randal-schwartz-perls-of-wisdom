@@ -1,0 +1,188 @@
+#!/usr/bin/perl
+use strict;
+$|++;
+
+use DBI ();
+use CGI::Pretty qw(:all -no_debug);
+
+## BEGIN CONFIG ##
+
+my $DSN = 'dbi:mysql:stonehenge_httpd';
+my $DB_AUTH = 'sekretuser:sekretpassword';
+my $OUTPUT = "/home/merlyn/Html/stats.html";
+my $DAY = 7;
+my $COMMON = <<END_COMMON;
+(
+  (
+    Url not like '/%/%'
+    or Url like '/perltraining/%'
+    or Url like '/merlyn/%'
+    or Url like '/cgi/%'
+    or Url like '/perl/%'
+    or Url like '/icons/%'
+    or Url like '/books/%'
+  )
+  and Host not like '%.stonehenge.%'
+  and When > date_sub(now(), interval $DAY day)
+)
+END_COMMON
+
+## END CONFIG ##
+
+my $TMP = "$OUTPUT~NEW~";
+open STDOUT, ">$TMP" or die "Cannot create $TMP: $!";
+chmod 0644, $TMP or warn "Cannot chmod $TMP: $!";
+
+my $dbh = DBI->connect($DSN, (split ':', $DB_AUTH), { RaiseError => 1 });
+$dbh->do("SET OPTION SQL_BIG_TABLES = 1");
+
+print
+  start_html("Web server activity"),
+  h1("Web server activity at ".localtime),
+  p("This page gives web server activity viewed in various ways,",
+    "updated frequently for information over the prior seven days.");
+
+print
+  h2("Incoming links"),
+  p("The following links were the most frequent ways that people found to this site.");
+
+print
+  table({Cellspacing => 0, Cellpadding => 2, Border => 1},
+        Tr(
+           th("Hits in<br>past $DAY days"),
+           th("Source of link"),
+           th("Target of link"),
+          ),
+        map {
+          my ($hits, $referer, $url) = @$_;
+          Tr(
+             td($hits),
+             td(show_link($referer)),
+             td(show_link($url)),
+            );
+        } @{$dbh->selectall_arrayref(<<END)});
+select count(*) as Hits, Referer, Url
+from requests
+where $COMMON and Referer not like '%.stonehenge.%'
+group by Referer, Url
+order by Hits desc
+limit 30
+END
+
+print
+  h2("Outgoing links"),
+  p("The following links were the most frequent ways that people left this site.");
+
+print
+  table({Cellspacing => 0, Cellpadding => 2, Border => 1},
+        Tr(
+           th("Hits in<br>past $DAY days"),
+           th("Source of link"),
+           th("Target of link"),
+          ),
+        map {
+          my ($hits, $referer, $url) = @$_;
+          $url =~ s#^/cgi/go/##;
+          Tr(
+             td($hits),
+             td(show_link($referer)),
+             td(show_link($url)),
+            );
+        } @{$dbh->selectall_arrayref(<<END)});
+select count(*) as Hits, Referer, Url
+from requests
+where $COMMON and Url like '/cgi/go/%'
+group by Referer, Url
+order by Hits desc
+limit 30
+END
+
+print
+  h2("CPU Burning"),
+  p("The following hosts burnt the most cumulative CPU on the server.");
+
+print
+  table({Cellspacing => 0, Cellpadding => 2, Border => 1},
+        Tr(
+           th("Total CPU seconds<br>in past $DAY days"),
+           th("Host making the request"),
+          ),
+        map {
+          my ($cpu, $host) = @$_;
+          Tr(
+             td($cpu),
+             td($host),
+            );
+        } @{$dbh->selectall_arrayref(<<END)});
+select sum(cpuuser+cpusys+cpucuser+cpucsys) as Cpu, Host
+from requests
+where $COMMON
+group by Host
+order by Cpu desc
+limit 30
+END
+
+print
+  h2("CPU Hogging"),
+  p("The following periods were the busiest in terms of total CPU used.");
+
+print
+  table({Cellspacing => 0, Cellpadding => 2, Border => 1},
+        Tr(
+           th("15-minute period beginning<br>(localtime)"),
+           th("Total CPU seconds<br>burnt in the period"),
+          ),
+        map {
+          my ($period, $cpu) = @$_;
+          Tr(
+             td($period),
+             td($cpu),
+            );
+        } @{$dbh->selectall_arrayref(<<END)});
+select
+  from_unixtime(15*60*floor(unix_timestamp(when)/(15*60))) as Period,
+  sum(cpuuser+cpusys+cpucuser+cpucsys) as Cpu
+from requests
+where $COMMON group by Period
+order by Cpu desc
+limit 30
+END
+
+print
+  h2("User Agent Bytesucking"),
+  p("The following User Agents sucked the most cumulative bytes on the server.");
+
+print
+  table({Cellspacing => 0, Cellpadding => 2, Border => 1},
+        Tr(
+           th("Total Bytes<br>in past $DAY days"),
+           th("User Agent making the request"),
+          ),
+        map {
+          my ($sent, $agent) = @$_;
+          Tr(
+             td($sent),
+             td($agent),
+            );
+        } @{$dbh->selectall_arrayref(<<END)});
+select sum(Bytes) as Sent, Browser
+from requests
+where $COMMON
+group by Browser
+order by Sent desc
+limit 30
+END
+
+print end_html;
+
+$dbh->disconnect;
+
+close STDOUT;
+rename $TMP, $OUTPUT or die "Cannot rename $TMP to $OUTPUT: $!";
+
+sub show_link {
+  use HTML::Entities ();
+  my $url = shift;
+  my $html_escaped_url = HTML::Entities::encode_entities($url);
+  a({Href => $html_escaped_url}, $html_escaped_url);
+}

@@ -1,0 +1,114 @@
+#!/usr/bin/perl -w
+use strict;
+$|++;
+
+## config
+
+my @URL = qw(http://www.stonehenge.Xcom/);
+
+sub OK_TO_FOLLOW {
+  my $uri = shift;              # URI object, known to be http only
+  for ($uri->host) {
+    return 0 unless /\.stonehenge\.Xcom$/i;
+  }
+  for ($uri->query) {
+    return 0 if defined $_ and length;
+  }
+  for ($uri->path) {
+    return 0 if /^\/(cgi|fors|-)/;
+    return 0 if /col\d\d|index/;
+    return 0 if /Pictures/;
+    return 0 unless /(\.html?|\/)$/;
+  }
+  return 1;
+}
+
+## end config
+
+use WWW::Robot;
+use LWP::UserAgent;
+use CGI::Pretty qw(-no_debug :html);
+use HTML::Entities;
+
+my %description;
+my %keywords;
+my %keyword_caps;
+
+my $robot = WWW::Robot->new
+  (
+   NAME => 'MetaBot',
+   VERSION => '0.15',
+   EMAIL => 'merlyn@stonehenge.Xcom',
+   USERAGENT => LWP::UserAgent->new,
+   CHECK_MIME_TYPES => 0,
+   ## VERBOSE => 1,
+   );
+
+$robot->env_proxy;
+
+$robot->addHook
+  ("follow-url-test" => sub {
+     my ($robot, $hook, $url) = @_;
+     return 0 unless $url->scheme eq 'http';
+     OK_TO_FOLLOW($url);
+   });
+$robot->addHook
+  ("invoke-on-contents" => sub {
+     my ($robot, $hook, $url, $response, $structure) = @_;
+     my %meta = map {
+       my $header = $response->header("X-Meta-$_");
+       defined $header ? ($_, $header) : ();
+     } qw(Description Keywords);
+     return unless %meta;
+     if (exists $meta{Description}) {
+       $_ = $meta{Description};
+       tr/ \t\n/ /s;
+       $description{$url} = $_;
+     }
+     if (exists $meta{Keywords}) {
+       for (split /,/, $meta{Keywords}) {
+         s/^\s+//;
+         s/\s+$//;
+         $keywords{lc $_}{$url}++;
+         $keyword_caps{lc $_} = $_;
+       }
+     }
+   });
+$robot->run(@URL);
+
+my %seen_letter;
+
+print
+  table({ Cellspacing => 0, Cellpadding => 10, Border => 2 },
+        do {
+          my %letters;
+          @letters{map /^([a-z])/, keys %keywords} = ();
+          %letters ? 
+            Tr(td({Colspan => 3},
+                  p("Jump to:",
+                    map a({Href => "#index_$_"}, uc $_), sort keys %letters)))
+              : 0;
+        },
+        map {
+          my $key = $_;
+          my @value =
+            map {
+              my $url = $_;
+              my $text = exists $description{$url} ?
+                $description{$url} : "(no description provided)";
+
+              [a({Href => encode_entities($url)}, encode_entities($url)),
+               encode_entities($text),
+              ];
+            } sort keys %{$keywords{$key}};
+          my $key_text = $keyword_caps{$key};
+          if ($key =~ /^([a-z])/ and not $seen_letter{$1}++ ) {
+            $key_text = a({ Name => "index_$1" }, $key_text);
+          }
+
+          map {
+            Tr(($_ > 0 ? () : td({Rowspan => scalar @value}, $key_text)),
+               td($value[$_]));
+            } 0..$#value;
+        } sort keys %keywords
+       );

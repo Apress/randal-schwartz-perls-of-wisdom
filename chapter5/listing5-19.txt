@@ -1,0 +1,70 @@
+#!/usr/bin/perl
+use strict;
+$|++;
+
+$SIG{__DIE__} = sub {
+  my $arg = shift;
+  warn "makeicon died with $arg" unless $arg =~ /404/;
+  print "Status: 404\n\n";
+};
+
+## we are a 404 handler, so we need to get the request that triggered the 404:
+my $r = shift->prev;
+
+## if the request was for a subdirectory or had args, bad news:
+die 404 if not $r or $r->args or $r->path_info;
+
+## now extract the expected filename, which we'll need to generate:
+my $filename = $r->filename;
+my ($dir,$base) = $filename =~ m{(.*)/(.*)}s;
+
+## and ensure that it's a gif that we want to make:
+my ($height, $width, $style, $color) =
+  $base =~ m{^(\d+)x(\d+)(?:-(?:([ns][ew]i?)?-)?([0-9a-fA-F]{6})?)?\.gif$} or
+  die 404;
+
+## don't let people burn my CPU
+die 404 if $height * $width > 2000 or $height * $width < 1;
+
+## Time to make the gif:
+require GD;
+my $im = GD::Image->new($width,$height) or die 404;
+my $grey = $im->colorAllocate(126,127,128); # I hope we don't collide
+$im->transparent($grey);
+
+if (defined $color) {           # if no color, make transparent spacer gif
+  my $ink = $im->colorAllocate(unpack "C*", pack "H*", $color);
+
+  if (defined $style) {         # it's a corner arc
+    my $center_x = $style =~ /^.e/i ? 0 : $width-1;
+    my $center_y = $style =~ /^s/i ? 0 : $height-1;
+
+    if ($style =~ /^..i/) {     # invert
+      $im->fill(0,0,$ink);
+      $ink = $grey;
+    }
+    $im->arc($center_x,$center_y,$width*2,$height*2, 0, 360, $ink);
+    $im->fill($center_x,$center_y,$ink);
+  } else {                      # it's a rectangle
+    $im->fill(0,0,$ink);
+  }
+}
+
+## good job! time to write it out:
+
+my $gif = $im->gif;
+
+## if this fails, we just generate dynamically each time, no biggy
+require Apache::File;
+my $tmpname = "$dir/.$$.$base";
+if (my $tmp = Apache::File->new(">$tmpname")) {
+  print $tmp $gif;
+  close $tmp;
+  rename $tmpname, $filename or warn "cannot rename $tmpname to $filename: $!";
+} else {
+  warn "couldn't create $tmpname: $!";
+}
+
+print "Status: 200\nContent-type: image/gif\n\n";
+print $gif;
+exit 0;

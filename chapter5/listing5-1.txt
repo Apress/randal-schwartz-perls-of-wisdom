@@ -1,0 +1,104 @@
+package Stonehenge::DBILog;
+use strict;
+
+## usage: PerlInitHandler Stonehenge::DBILog
+
+
+
+use Apache::Constants qw(OK DECLINED);
+use DBI ();
+use Apache::Util qw(ht_time);
+
+my $DSN = 'dbi:mysql:stonehenge_httpd';
+my $DB_TABLE = 'requests';
+my $DB_AUTH = 'sekretuser:sekretpassword';
+
+my @FIELDS =
+  qw(when host method url user referer browser status bytes
+     wall cpuuser cpusys cpucuser cpucsys);
+my $INSERT =
+  "INSERT INTO $DB_TABLE (".
+  (join ",", @FIELDS).
+  ") VALUES(".
+  (join ",", ("?") x @FIELDS).
+  ")";
+
+=for SQL
+
+create table requests (
+  when datetime not null,
+  host varchar(255) not null,
+  method varchar(8) not null,
+  url varchar(255) not null,
+  user varchar(50),
+  referer varchar(255),
+  browser varchar(255),
+  status smallint(3) default 0,
+  bytes int(8),
+  wall smallint(5),
+  cpuuser float(8),
+  cpusys float(8),
+  cpucuser float(8),
+  cpucsys float(8)
+);
+  
+=cut
+
+sub handler {
+  my $r = shift;
+  return DECLINED unless $r->is_initial_req;
+
+  my @times = (time, times);    # closure
+
+  $r->push_handlers
+    (
+     PerlLogHandler =>
+     sub {
+       ## first, reap any zombies so child CPU is proper:
+       {
+         my $kid = waitpid(-1, 1);
+         if ($kid > 0) {
+           # $r->log->warn("found kid $kid"); # DEBUG
+           redo;
+         }
+       }
+
+       ## delta these times:
+       @times = map { $_ - shift @times } time, times;
+
+       my $orig = shift;
+       my $r = $orig->last;
+
+       my @data =
+         (
+          ht_time($orig->request_time, '%Y-%m-%d %H:%M:%S', 0),
+          $r->get_remote_host,
+          $r->method,
+          # $orig->uri,
+          ($r->the_request =~ /^\S+\s+(\S+)/)[0],
+          $r->connection->user,
+          $r->header_in('Referer'),
+          $r->header_in('User-agent'),
+          $orig->status,
+          $r->bytes_sent,
+          @times,
+         );
+
+       eval {
+         my $dbh = DBI->connect($DSN, (split ':', $DB_AUTH),
+                               { RaiseError => 1 });
+         my $sth = $dbh->prepare_cached($INSERT);
+         $sth->execute(@data);
+         $dbh->disconnect;
+       };
+       if ($@) {
+         $r->log->error("dbi: $@");
+       }
+
+       return DECLINED;
+     });
+  
+  return DECLINED;
+}
+
+1;

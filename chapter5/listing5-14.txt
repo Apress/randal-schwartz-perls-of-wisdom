@@ -1,0 +1,95 @@
+#!/usr/bin/perl -w
+use strict;
+$|=1;
+
+use LWP::UserAgent;
+use HTTP::Cookies;
+use HTTP::Request::Common;
+use HTML::LinkExtor;
+
+my %LINKS =                     # subset of %HTML::Tagset::linkElements
+(
+ 'applet'  => ['archive', 'codebase', 'code'],
+ 'bgsound' => ['src'],
+ 'body'    => ['background'],
+ 'embed'   => ['src'],
+ 'frame'   => ['src'],
+ 'iframe'  => ['src'],
+ 'ilayer'  => ['background'],
+ 'img'     => ['src', 'lowsrc'],
+ 'input'   => ['src'],
+ 'layer'   => ['background', 'src'],
+ ## 'link'    => ['href'], ## durn, some of these are stylesheets
+ 'script'  => ['src'],
+ 'table'   => ['background'],
+ 'td'      => ['background'],
+ 'th'      => ['background'],
+ 'tr'      => ['background'],
+);
+
+my $ua = LWP::UserAgent->new;
+$ua->env_proxy;
+$ua->agent("dltime/1.00 ".$ua->agent); # identify ourselves
+$ua->cookie_jar(HTTP::Cookies->new); # capture cookies if needed
+
+report($_) for @ARGV;
+
+exit 0;
+
+sub report {
+  my $start = shift;
+
+  my @todo = ["", $start];
+  my %done;
+
+  while (@todo) {
+    my ($refer, $url) = @{shift @todo};
+    next if exists $done{$url};
+
+    my $request = GET $url, [referer => $refer];
+    my $response = $ua->simple_request($request);
+
+    if ($response->is_success) {
+      $done{$url} = length (my $content = $response->content);
+
+      next if $response->content_type ne "text/html";
+
+      my $base = $response->base; # relative URLs measured relative to here
+      my $p = HTML::LinkExtor->new(undef, $base) or die;
+      $p->parse($content);
+      $p->eof;
+      for my $link ($p->links) {
+        my ($tag, %attr) = @$link;
+        if ($LINKS{$tag}) {
+          for (@{$LINKS{$tag}}) {
+            next unless exists $attr{$_};
+            next unless length (my $a = $attr{$_});
+            ## print "$base $tag $_ => $a\n"; ## debug
+            push @todo, [$base, $a];
+          }
+        }
+      }
+      
+    } elsif ($response->is_redirect) {
+      $done{$url} = length $response->content; # this counts
+      my $location = $response->header('location') or next;
+      push @todo, [$url, $location]; # but get this too
+    } elsif ($response->is_error) {
+      print "$url ERROR: ", $response->status_line, "\n";
+    }
+
+  }                             # end of outer loop
+
+  {
+    my $total = 0;
+
+    print "$start =>\n";
+    for my $url (sort { $done{$b} <=> $done{$a} } keys %done) {
+      $total += $done{$url};
+      printf "  %10d  %s\n", $done{$url}, $url;
+    }
+    printf "  %10d TOTAL\n", $total;
+    printf "  %10.0f seconds at 28.8\n\n", $total/2000;
+  }
+
+}

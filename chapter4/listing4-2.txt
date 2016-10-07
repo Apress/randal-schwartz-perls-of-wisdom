@@ -1,0 +1,16 @@
+### LISTING ONE [random_visitor_th]
+#!/usr/bin/perl
+srand ($$ ^ time);
+$VISITOR = int rand 100_000;
+{
+  next if $VISITOR =~ s/1\d$/$&th/; # 10-19
+  next if $VISITOR =~ s/1$/1st/; # 1
+  next if $VISITOR =~ s/2$/2nd/; # 2
+  next if $VISITOR =~ s/3$/3rd/; # 3
+  next if $VISITOR =~ s/\d$/$&th/; # everything else
+}
+print <<"EOT";
+Content-type: text/html
+
+<img src="/cgi/bigword?$VISITOR" alt="$VISITOR">
+EOT

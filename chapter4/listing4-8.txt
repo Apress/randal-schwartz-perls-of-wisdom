@@ -1,0 +1,59 @@
+#!/usr/bin/perl
+
+use strict;
+use File::Find;
+use lib "/home/merlyn/CPAN/lib";
+use HTML::Entities;
+
+## begin config
+my (@TOP) =			# top level directories
+  qw(/home/merlyn/public_html);
+sub PRUNE {			# don't search these dirs
+  ## $_[0] is basename, $_[1] is full path
+  $_[0] =~ /private/;
+}
+sub IGNORE {			# don't notice these files
+  ## $_[0] is basename, $_[1] is full path
+  $_[0] =~ /^\.|~$|\.(gif|jpe?g)$/;
+}
+my ($HOWMANY) =			# keep this many new files
+  10;
+sub TRANSFORM ($;) {		# turn path into URL
+  local($_) = @_;
+  s!/home/merlyn/public_html/!/~merlyn/!;
+  $_;
+}
+my ($LIST_PRE) =		# prefix list
+  "<UL>\n";
+my ($ITEM_PRE) =		# prefix item
+  "<LI>";
+my ($ITEM_POST) =		# suffix item
+  "\n";
+my ($LIST_POST) =		# suffix list
+  "</UL>\n";
+## end config
+
+my (%when);			# record of stamps
+
+find (sub {
+	return $File::Find::prune = 1
+	  if PRUNE $_, $File::Find::name;
+	return unless -f;	# only files
+	return if IGNORE $_, $File::Find::name;
+	$when{$File::Find::name} = (stat _)[9];
+      }, @TOP);
+
+my @names = sort { $when{$b} <=> $when{$a} } keys %when;
+splice(@names, $HOWMANY);	# discard older stuff
+
+my $name;			# shuddup $name
+print $LIST_PRE;
+for $name (@names) {
+  my $url = encode_entities TRANSFORM $name;
+  print
+    $ITEM_PRE,
+    "<A HREF=\"$url\">$url</a> on ",
+    scalar localtime $when{$name},
+    $ITEM_POST;
+}
+print $LIST_POST;

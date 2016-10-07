@@ -1,0 +1,71 @@
+#!/usr/local/bin/perl
+
+use strict;
+
+my $TAG = "<!-- ADD HERE -->";
+use HTML::Entities;
+use URI::Escape;
+umask 0022;
+
+{
+  my @names = @ARGV ? @ARGV : grep { -f and -B } <*>;
+
+  local @ARGV = "index.html";
+  local $^I = "~";
+
+  while (<>) {
+    if (eof) {
+      print;                    # last line
+      print "<!-- move the following table to the proper location -->\n";
+      print "<table border=2> $TAG\n";
+      &scan_pictures(@names);
+      print "</table>\n";
+      last;
+    }
+    if (/\Q$TAG/o) {
+      print;                    # tag line
+      &scan_pictures(@names);
+      while (<>) {              # dump remaining lines
+        print;
+      }
+      last;
+    }
+    print;                      # default
+  }
+}
+exit 0;
+
+## subroutines
+
+sub scan_pictures {
+  for (@_) {
+    next if /\.thumb\.jpg$/;
+    my $thumb = "$_.thumb.jpg";
+    next if -e $thumb;
+    my $pnm = &get_pnm($_) or next;
+    open PNMTOTHUMB,"| pnmscale -xy 100 100 | cjpeg -smoo 10 -qual 50 >$thumb"
+      or next;
+    print PNMTOTHUMB $pnm;
+    close PNMTOTHUMB;
+    print
+      "<tr><td><a href=\"",
+      encode_entities(uri_escape($_)),
+      "\"><img src=\"",
+      encode_entities(uri_escape($thumb)),
+      "\" alt=\"[thumbnail of ",
+      encode_entities($_),
+      "]\"></a></td><td>",
+      int((1023 + -s)/1024),
+      "K</td><td>\n  Description not provided\n</td>",
+      "</tr>\n";
+  }
+}
+
+sub get_pnm {
+  local $_ = shift;
+  for my $cmd ("djpeg $_", "giftopnm $_") {
+    my $pnm = `$cmd 2>/dev/null`;
+    return $pnm unless $?;
+  }
+  return;
+}

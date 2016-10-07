@@ -1,0 +1,27 @@
+#!/home/merlyn/bin/perl -w
+use strict;
+$|++;
+
+use File::Find;
+
+unless (@ARGV) {
+  find sub {
+    push @ARGV, $File::Find::name if /\.html/;
+  }, "/home/merlyn/Html/";
+}
+undef $/;
+$^I = "~";
+while (<>) {
+  s{(href="(.*?)")}{
+    my ($old,$url,$new) = ($1,$2);
+    if ($url =~ /^http:(?!.*cgi\/go)/) {
+      $new = qq{href="/cgi/go/$url"};
+      print STDOUT "$ARGV: changing $old to $new\n";
+    } else {
+      $new = $old;
+    }
+    $new;
+  }egi;
+  print if defined $^I;
+}
+
